@@ -1,0 +1,152 @@
+import { gql, GraphQLClient } from 'graphql-request';
+import { graphql } from 'graphql';
+
+function insertString(str, index, value) {
+    return str.substr(0, index) + value + str.substr(index);
+}
+
+function converToUUID(_uuid){
+ _uuid = insertString(_uuid, 8, '-').toUpperCase()
+ _uuid = insertString(_uuid, 13, '-').toUpperCase()
+ _uuid = insertString(_uuid, 18, '-').toUpperCase()
+ _uuid = insertString(_uuid, 23, '-').toUpperCase()
+ 
+ return "{"+_uuid+"}";
+}
+
+export default defineComponent({
+  async run({ event, steps, $ }) {
+    // GQL request
+    const xmc_url = 'https://<xmc-instance>.sitecorecloud.io';
+    const gql_path = '/sitecore/api/authoring/graphql/v1/';
+    const gql_jwt = `${process.env.PROD_MIKE_TOKEN}`
+    const itemId = `{${steps.trigger.event.body.Item.Id}}` // Categories item
+    const templateId = "{8DA17134-AF19-402B-914F-BC0823EBC0C4}" // Page Branch 
+
+    const categories = [
+      { "Name": "Bags", "Description": "<p>a flexible container with an opening at the top, used for carrying things.</p><p>he arrived at the children's ward carrying a bag full of toys for the young patients</p>"},
+      { "Name": "Shirts", "Description": "<p>another flexible container with an opening at the top, used for carrying things.</p><p>he arrived at the children's ward carrying a bag full of toys for the young patients</p>"},
+      { "Name": "Shoes", "Description": "<p>still flexible container with an opening at the top, used for carrying things.</p><p>he arrived at the children's ward carrying a bag full of toys for the young patients</p>"},
+      { "Name": "Jackets", "Description": "<p>last flexible container with an opening at the top, used for carrying things.</p><p>he arrived at the children's ward carrying a bag full of toys for the young patients</p>"},
+    ]
+
+    const graphQLClient = new GraphQLClient(xmc_url+gql_path, {
+        headers: {
+          authorization: 'Bearer ' + gql_jwt,
+        },
+      });
+
+    let results = []
+    
+    for await(const category of categories) {
+      const query_create = gql`
+        mutation {
+          createItem(
+            input: {
+              name: "${category.Name}"
+              templateId: "${templateId}"
+              parent: "${itemId}"
+              language: "en"
+              fields: [
+                { name: "Title", value: "${category.Name}" }
+              ]
+            }
+          ) {
+            item {
+              itemId
+              name
+              path
+              hasChildren(includeHiddenItems: true)
+              children(includeHiddenItems: true){
+                nodes {
+                  name
+                  itemId
+                }
+              }
+              fields(ownFields: true, excludeStandardFields: true) {
+                nodes {
+                  name
+                  value
+                }
+              }
+            }
+          }
+        }            
+          `;
+
+      let r = "ok", m = {}
+      try{ 
+        console.log('create query', query_create);
+        m = await graphQLClient.request(query_create);
+        console.log('create output', m);
+        const dataId = m.createItem.item.children.nodes[0].itemId
+        const path = m.createItem.item.path
+        const query_delete = gql`
+          mutation {
+            deleteItem( input: {
+                path: "${path}/Data/Text 1"
+                permanently: true
+              }
+            ) {
+              successful
+            }
+          }          
+        `;
+        console.log('delete query', query_delete);
+        m = await graphQLClient.request(query_delete);
+        console.log('delete output', m);
+        const query_update = gql`
+          mutation {
+            createItem(
+              input: {
+                name: "Text 1"
+                templateId: "{0A7AA373-5ED1-4E9B-9678-22D3C5FAF6DF}"
+                parent: "${converToUUID(dataId)}"
+                fields: [
+                  { name: "Text", value: "${category.Description}" }
+                ]
+              }
+            ) {
+              item {
+                itemId
+                name
+                path
+                fields(ownFields: true, excludeStandardFields: true) {
+                  nodes {
+                    name
+                    value
+                  }
+                }
+              }
+            }
+          }   
+        `;
+        console.log('update query', query_update);
+        m = await graphQLClient.request(query_update);
+        console.log('update output', m);
+      }catch(ex){
+        console.log('error:', ex);
+        r = "error:" + ex
+      }
+      results.push({ "name": category.Name, "result": r, "message": m})
+      
+    }
+    
+
+    // response
+    const resp_headers = {"Content-Type": "application/json"}
+
+    const body = {
+      gql_jwt,
+      itemId,
+      templateId,
+      results
+    }
+
+    await $.respond({
+      status: 200,
+      resp_headers,
+      body,
+    })
+  },
+})
